@@ -291,6 +291,23 @@ class AtApi:
         else:
             print("Project deleted")
 
+    def close_project(self, project_slug: str):
+        """
+        Close a project from memory
+        """
+        if not self.headers:
+            raise Exception("No token found")
+
+        r = requests.post(
+            f"{self.url}/projects/close/{project_slug}",
+            headers=self.headers,
+            verify=False,
+        )
+        if not r.ok:
+            print(f"Error closing project: {self._parse_error(r)}")
+        else:
+            print(f"Project {project_slug} closed")
+
     def get_users(self):
         """
         Get users
@@ -662,6 +679,9 @@ class AtApi:
         if raw_datasets:
             self.download_raw_dataset(project_slug, path_project)
             print("Raw dataset downloaded")
+
+        # close the project to free server memory
+        self.close_project(project_slug)
 
         return None
 
