@@ -792,3 +792,78 @@ class AtApi:
             print(f"Error starting model training: {self._parse_error(r)}")
         else:
             print("Model in training")
+
+    def get_next_element(
+        self,
+        project_slug: str,
+        scheme: str,
+        selection: str = "random",
+        sample: str = "untagged",
+        history: list | None = None,
+    ) -> dict:
+        """
+        Get the next element to annotate.
+
+        Returns the element dict with keys: element_id, text, context, etc.
+        """
+        if not self.headers:
+            raise Exception("No token found")
+
+        payload = {
+            "scheme": scheme,
+            "selection": selection,
+            "sample": sample,
+            "history": history or [],
+        }
+
+        r = requests.post(
+            f"{self.url}/elements/next",
+            headers=self.headers,
+            verify=False,
+            params={"project_slug": project_slug},
+            json=payload,
+        )
+        if not r.ok:
+            raise Exception(f"Error getting next element: {self._parse_error(r)}")
+        return r.json()
+
+    def post_annotation(
+        self,
+        project_slug: str,
+        scheme: str,
+        element_id: str,
+        label: str,
+        dataset: str = "train",
+        action: str = "add",
+    ):
+        """
+        Add, update, or delete an annotation.
+
+        Args:
+            project_slug: Project slug.
+            scheme: Annotation scheme name.
+            element_id: ID of the element to annotate.
+            label: Label to assign.
+            dataset: Dataset split ("train", "test", or "valid").
+            action: One of "add", "update", or "delete".
+        """
+        if not self.headers:
+            raise Exception("No token found")
+
+        payload = {
+            "project_slug": project_slug,
+            "dataset": dataset,
+            "scheme": scheme,
+            "element_id": element_id,
+            "label": label,
+        }
+
+        r = requests.post(
+            f"{self.url}/annotation/{action}",
+            headers=self.headers,
+            verify=False,
+            params={"project_slug": project_slug},
+            json=payload,
+        )
+        if not r.ok:
+            raise Exception(f"Error posting annotation: {self._parse_error(r)}")

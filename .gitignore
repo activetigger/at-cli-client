@@ -7,3 +7,4 @@ notebooks/accounts.txt
 notebooks/exports/
 atclient/__pycache__/*
 CLAUDE.md
+notebooks/export*
