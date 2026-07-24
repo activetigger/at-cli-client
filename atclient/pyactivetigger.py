@@ -107,6 +107,88 @@ class AtApi:
         else:
             print("Error: no access token in response")
 
+    # small enough that one chunk goes through well under a 60s proxy timeout
+    # even on a slow connection
+    CHUNK_SIZE = 4 * 1024 * 1024
+    CHUNK_RETRIES = 3
+
+    def upload_file(self, content: bytes, filename: str) -> str:
+        """
+        Send a file to the server with the chunked-upload protocol.
+
+        The file is sliced into small parts sent as a sequence of short
+        requests so no single request outlives reverse-proxy timeouts.
+        Failed chunks are retried.
+
+        Args:
+            content: raw bytes of the file
+            filename: name of the file (extension matters server-side)
+
+        Returns:
+            the upload_id referencing the staged file, to pass to
+            routes expecting an upload (e.g. /projects/new)
+        """
+        if not self.headers:
+            raise Exception("No token found")
+
+        total_chunks = max(1, -(-len(content) // self.CHUNK_SIZE))
+        r = requests.post(
+            f"{self.url}/upload/start",
+            json={
+                "filename": filename,
+                "total_size": len(content),
+                "total_chunks": total_chunks,
+            },
+            headers=self.headers,
+            verify=False,
+        )
+        if not r.ok:
+            raise Exception(f"Error starting upload: {self._parse_error(r)}")
+        upload_id = r.json()["upload_id"]
+
+        try:
+            for index in range(total_chunks):
+                chunk = content[index * self.CHUNK_SIZE : (index + 1) * self.CHUNK_SIZE]
+                for attempt in range(1, self.CHUNK_RETRIES + 1):
+                    try:
+                        r = requests.post(
+                            f"{self.url}/upload/chunk",
+                            params={"upload_id": upload_id, "index": index},
+                            files={"file": (filename, chunk)},
+                            headers=self.headers,
+                            verify=False,
+                        )
+                        if r.ok:
+                            break
+                        error = Exception(
+                            f"Error uploading chunk {index}: {self._parse_error(r)}"
+                        )
+                    except requests.exceptions.RequestException as e:
+                        error = Exception(f"Error uploading chunk {index}: {e}")
+                    if attempt == self.CHUNK_RETRIES:
+                        raise error
+                    time.sleep(attempt)
+
+            r = requests.post(
+                f"{self.url}/upload/finish",
+                params={"upload_id": upload_id},
+                headers=self.headers,
+                verify=False,
+            )
+            if not r.ok:
+                raise Exception(f"Error finishing upload: {self._parse_error(r)}")
+            return upload_id
+        except Exception:
+            # drop the server-side session; ignore failures (the server
+            # garbage-collects stale sessions anyway)
+            try:
+                requests.delete(
+                    f"{self.url}/upload/{upload_id}", headers=self.headers, verify=False
+                )
+            except requests.exceptions.RequestException:
+                pass
+            raise
+
     def get_project_state(self, project_slug: str):
         """
         Get project state
@@ -223,17 +305,12 @@ class AtApi:
             if col_label not in data.columns:
                 raise Exception(f"Column {col_label} not found in data")
 
-        # send the file
-        csv_string = data.to_csv(index=False)
-        r = requests.post(
-            f"{self.url}/files/add/project",
-            params={"project_name": project_name},
-            files={"file": (filename, csv_string)},
-            verify=False,
-            headers=self.headers,
-        )
-        if not r.ok:
-            raise Exception(f"Error uploading file: {self._parse_error(r)}")
+        # send the file with the chunked-upload protocol, unless the data
+        # comes from another project or a toy dataset
+        upload_id = None
+        if from_project is None and not from_toy_dataset:
+            csv_bytes = data.to_csv(index=False).encode("utf-8")
+            upload_id = self.upload_file(csv_bytes, filename)
 
         # create the project
         form = {
@@ -241,7 +318,7 @@ class AtApi:
             "col_id": col_id,
             "cols_text": cols_text,
             "cols_label": cols_label,
-            "filename": filename,
+            "upload_id": upload_id,
             "cols_context": cols_context,
             "language": language,
             "n_train": n_train,
